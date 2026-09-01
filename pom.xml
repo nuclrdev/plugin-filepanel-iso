@@ -6,7 +6,7 @@
 
 	<groupId>dev.nuclr.plugin.core</groupId>
 	<artifactId>filepanel-iso</artifactId>
-	<version>1.0.0</version>
+	<version>1.0.1</version>
 	<name>Nuclr File Panel - ISO</name>
 
 	<properties>
