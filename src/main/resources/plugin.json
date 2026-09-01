@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "version": "${project.version}",
+  "platformSdkVersion": "${platform.sdk.version}",
+	"plugins": [
+		{
+			"class": "dev.nuclr.plugin.core.mount.iso.IsoFilePanelPlugin",
+			"type": "FilePanel",
+			"id": "dev.nuclr.plugin.core.mount.iso",
+			"name": "ISO Panel",
+			"version": "${project.version}",
+			"description": "Browse and extract ISO 9660, Rock Ridge, Joliet and UDF disk images in a read-only FilePanel.",
+			"author": "Nuclr Development Team",
+			"license": "Apache-2.0",
+			"website": "https://nuclr.dev",
+			"pageUrl": "https://github.com/nuclrdev/plugin-filepanel-iso",
+			"docUrl": "https://github.com/nuclrdev/plugin-filepanel-iso",
+			"developer": "Official",
+			"singleton": false
+		}
+	]
+}

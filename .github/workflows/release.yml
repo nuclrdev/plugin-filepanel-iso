@@ -1,0 +1,70 @@
+name: Release Plugin
+
+on:
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+
+      - name: Decode keystore
+        run: |
+          echo "${{ secrets.P12_KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/nuclr-signing.p12"
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build and sign
+        env:
+          JARSIGNER_STOREPASS: ${{ secrets.P12_PASSWORD }}
+          JARSIGNER_KEYALIAS: ${{ secrets.P12_KEY_ALIAS }}
+        run: |
+          mvn clean verify \
+            -Djarsigner.storepass="$JARSIGNER_STOREPASS" \
+            -Djarsigner.keystorepath="$RUNNER_TEMP/nuclr-signing.p12" \
+            -Djarsigner.keyalias="$JARSIGNER_KEYALIAS"
+
+      - name: Tag release
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "v${{ steps.version.outputs.version }}"
+          git push origin "v${{ steps.version.outputs.version }}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ steps.version.outputs.version }}"
+          name: "v${{ steps.version.outputs.version }}"
+          generate_release_notes: true
+          files: |
+            target/filepanel-iso-${{ steps.version.outputs.version }}.zip
+            target/filepanel-iso-${{ steps.version.outputs.version }}.zip.sig
+
+      - name: Bump patch version
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          mvn versions:set -DnewVersion="$NEW_VERSION" -DgenerateBackupPoms=false
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pom.xml
+          git commit -m "Bump version to ${NEW_VERSION} [skip ci]"
+          git push

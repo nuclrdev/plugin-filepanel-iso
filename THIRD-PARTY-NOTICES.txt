@@ -1,0 +1,7 @@
+This plugin includes IsoFileReader 1.4.0.
+
+Copyright 2023 Palantir Technologies Inc.
+https://github.com/palantir/isofilereader
+
+IsoFileReader is licensed under the Apache License, Version 2.0. The complete
+Apache License, Version 2.0 terms are included in the accompanying LICENSE file.
