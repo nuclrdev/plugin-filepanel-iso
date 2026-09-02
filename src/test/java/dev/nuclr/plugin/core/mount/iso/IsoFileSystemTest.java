@@ -35,7 +35,9 @@ class IsoFileSystemTest {
 			assertEquals(List.of("NESTED.TXT"), folder.children().stream().map(IsoEntry::name).toList());
 
 			try (var input = iso.open(iso.resolve("/FOLDER/NESTED.TXT"))) {
+				assertEquals(IsoTestImage.NESTED_TEXT.length, input.available());
 				assertArrayEquals(IsoTestImage.NESTED_TEXT, input.readAllBytes());
+				assertEquals(0, input.available());
 			}
 		}
 	}
@@ -96,6 +98,25 @@ class IsoFileSystemTest {
 	}
 
 	@Test
+	void retainsIsoVersionSuffixWhenStrippingItWouldCollide() throws Exception {
+		Path image = IsoTestImage.createWithVersions(tempDir.resolve("versions.iso"));
+		try (var iso = new IsoFileSystem(image)) {
+			assertEquals("version one", new String(iso.open(iso.resolve("/VERSION.TXT")).readAllBytes()));
+			assertEquals("version two", new String(iso.open(iso.resolve("/VERSION.TXT;2")).readAllBytes()));
+		}
+	}
+
+	@Test
+	void refusesIsoMultiExtentPayloadInsteadOfReturningTruncatedData() throws Exception {
+		Path image = IsoTestImage.createWithUnsupportedMultiExtentFile(tempDir.resolve("multi.iso"));
+		try (var iso = new IsoFileSystem(image)) {
+			IsoEntry entry = iso.resolve("/LARGE.BIN");
+			assertFalse(entry.readable());
+			assertThrows(IOException.class, () -> iso.open(entry));
+		}
+	}
+
+	@Test
 	void cancellationRemovesThePartialFileAndPreservesAnExistingTarget() throws Exception {
 		Path image = IsoTestImage.create(tempDir.resolve("cancel.iso"));
 		Path output = Files.createDirectory(tempDir.resolve("cancel-out"));
@@ -103,12 +124,31 @@ class IsoFileSystemTest {
 		var callback = new CancellingCallback();
 		try (var iso = new IsoFileSystem(image)) {
 			assertThrows(IsoExtractor.ExtractionCancelledException.class,
-					() -> IsoExtractor.extract(iso, List.of(iso.resolve("/LARGE.BIN")), output, callback));
+					() -> IsoExtractor.extract(iso, List.of(iso.resolve("/LARGE.BIN")), output, callback,
+							(source, existing) -> IsoExtractor.ConflictAction.OVERWRITE));
 		}
 		assertEquals("original", Files.readString(target));
 		try (var files = Files.list(output)) {
 			assertEquals(List.of("LARGE.BIN"), files.map(path -> path.getFileName().toString()).toList());
 		}
+	}
+
+	@Test
+	void destinationConflictsRequireADecisionAndCanKeepBoth() throws Exception {
+		Path image = IsoTestImage.create(tempDir.resolve("conflict.iso"));
+		Path output = Files.createDirectory(tempDir.resolve("conflict-out"));
+		Path existing = Files.writeString(output.resolve("README.TXT"), "original");
+		try (var iso = new IsoFileSystem(image)) {
+			IsoEntry readme = iso.resolve("/README.TXT");
+			assertThrows(IsoExtractor.ExtractionCancelledException.class,
+					() -> IsoExtractor.extract(iso, List.of(readme), output, null));
+			assertEquals("original", Files.readString(existing));
+
+			assertTrue(IsoExtractor.extract(iso, List.of(readme), output, null,
+					(source, target) -> IsoExtractor.ConflictAction.KEEP_BOTH));
+		}
+		assertEquals("original", Files.readString(existing));
+		assertArrayEquals(IsoTestImage.ROOT_TEXT, Files.readAllBytes(output.resolve("README (2).TXT")));
 	}
 
 	private static final class CancellingCallback implements NuclrPluginCallback {

@@ -8,7 +8,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.OpenOption;
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.FormatStyle;
 import java.util.Locale;
@@ -42,7 +41,7 @@ final class IsoNuclrResource extends NuclrResource {
 		this.lastModifiedDateTime = entry != null ? entry.modified() : null;
 		this.createdDateTime = null;
 		this.lastAccessDateTime = null;
-		this.readable = true;
+		this.readable = entry == null || entry.readable();
 		addColumns(context);
 	}
 
@@ -109,10 +108,6 @@ final class IsoNuclrResource extends NuclrResource {
 	private static String formatTime(Locale locale, LocalDateTime value) {
 		return value == null ? "" : value.toLocalTime()
 				.format(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(locale));
-	}
-
-	static LocalDateTime epoch() {
-		return LocalDateTime.ofEpochSecond(0, 0, ZoneOffset.UTC);
 	}
 
 	static String displaySize(long bytes) {

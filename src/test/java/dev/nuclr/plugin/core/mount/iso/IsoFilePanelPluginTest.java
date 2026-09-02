@@ -5,7 +5,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.OpenOption;
@@ -85,6 +87,58 @@ class IsoFilePanelPluginTest {
 		} finally {
 			plugin.unload();
 		}
+	}
+
+	@Test
+	void rootParentEntryIsClaimedAndClosesTheIsoPanel() throws Exception {
+		Path image = IsoTestImage.create(tempDir.resolve("close.iso"));
+		var bus = new RecordingEventBus();
+		var plugin = plugin(bus);
+		try {
+			var root = plugin.openResource(new TestResource(image), new AtomicBoolean());
+			NuclrResource close = named(root, "..");
+
+			assertTrue(plugin.supports(close));
+			assertNull(plugin.openResource(close, new AtomicBoolean()));
+			assertEquals("plugin.unload", bus.type);
+			assertEquals(plugin.uuid(), bus.event.get("uuid"));
+		} finally {
+			plugin.unload();
+		}
+	}
+
+	@Test
+	void menuRetainsPanelNavigationAndSortingShortcuts() throws Exception {
+		Path image = IsoTestImage.create(tempDir.resolve("menu.iso"));
+		var plugin = plugin(new RecordingEventBus());
+		try {
+			plugin.openResource(new TestResource(image), new AtomicBoolean());
+			var bindings = plugin.menuItems(plugin.getCurrentResource()).stream()
+					.collect(java.util.stream.Collectors.toMap(
+							item -> item.getFunctionKey(), item -> item.getEventType()));
+			assertEquals("left", bindings.get("Alt+F1"));
+			assertEquals("right", bindings.get("Alt+F2"));
+			assertEquals("find", bindings.get("Alt+F7"));
+			assertEquals("folderHistory", bindings.get("Alt+F12"));
+			assertEquals("hideLeft", bindings.get("Ctrl+F1"));
+			assertEquals("hideRight", bindings.get("Ctrl+F2"));
+			assertEquals("filepanel.sort:name:Name", bindings.get("Ctrl+F3"));
+		} finally {
+			plugin.unload();
+		}
+	}
+
+	@Test
+	void walkingAfterUnmountFailsCleanly() throws Exception {
+		Path image = IsoTestImage.create(tempDir.resolve("walk.iso"));
+		var plugin = plugin(new RecordingEventBus());
+		var root = plugin.openResource(new TestResource(image), new AtomicBoolean());
+		NuclrResource folder = named(root, "FOLDER");
+		plugin.unload();
+
+		IOException error = assertThrows(IOException.class,
+				() -> plugin.walkDescendants(folder, ignored -> { }, new AtomicBoolean(), true));
+		assertTrue(error.getMessage().contains("closed"));
 	}
 
 	@Test

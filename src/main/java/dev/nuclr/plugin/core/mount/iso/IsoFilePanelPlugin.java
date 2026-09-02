@@ -63,13 +63,14 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 			Thread.ofVirtual().name("iso-extract-" + uuid).factory());
 	private final Object lifecycleLock = new Object();
 
-	private NuclrPluginContext context;
-	private IsoFileSystem fileSystem;
-	private IsoNuclrResource currentFolder;
-	private NuclrResource sourceResource;
-	private Path materializedImage;
-	private String displayName;
-	private boolean focused;
+	private volatile NuclrPluginContext context;
+	private volatile IsoFileSystem fileSystem;
+	private volatile IsoNuclrResource currentFolder;
+	private volatile NuclrResource sourceResource;
+	private volatile Path materializedImage;
+	private volatile String displayName;
+	private volatile boolean focused;
+	private volatile boolean opening;
 	private volatile boolean closing;
 	private volatile boolean unloading;
 
@@ -118,14 +119,16 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 			return null;
 		}
 
-		if (fileSystem != null || !isIsoResource(resource)) {
-			return null;
+		synchronized (lifecycleLock) {
+			if (unloading || opening || fileSystem != null || !isIsoResource(resource)) {
+				return null;
+			}
+			opening = true;
+			sourceResource = resource;
+			Path sourcePath = resource.getPath();
+			displayName = resourceName(resource,
+					sourcePath != null ? sourcePath : Path.of("image.iso"));
 		}
-
-		this.sourceResource = resource;
-		Path sourcePath = resource.getPath();
-		this.displayName = resourceName(resource,
-				sourcePath != null ? sourcePath : Path.of("image.iso"));
 		try {
 			Path image = localImage(resource, cancelled);
 			if (isCancelled(cancelled)) {
@@ -140,11 +143,20 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 				emitClosed();
 				return null;
 			}
-			this.fileSystem = opened;
-			this.currentFolder = IsoNuclrResource.of(context, opened, opened.root(), uuid);
-			this.closing = false;
+			IsoNuclrResource root = IsoNuclrResource.of(context, opened, opened.root(), uuid);
+			synchronized (lifecycleLock) {
+				if (unloading || isCancelled(cancelled)) {
+					opened.close();
+					deleteMaterializedImage();
+					emitClosed();
+					return null;
+				}
+				fileSystem = opened;
+				currentFolder = root;
+				closing = false;
+			}
 			LOG.info("Opened {} image {}", opened.format(), image);
-			return listDirectory(currentFolder);
+			return listDirectory(root);
 		} catch (IOException | RuntimeException e) {
 			if (isCancelled(cancelled) || Thread.currentThread().isInterrupted()) {
 				LOG.debug("ISO opening cancelled for {}", resource.getName());
@@ -160,43 +172,31 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 					"The ISO filesystem is unsupported or the file is damaged.");
 			emitClosed();
 			return null;
+		} finally {
+			opening = false;
 		}
-	}
-
-	@Override
-	public NuclrResourceData openResource(NuclrResource resource, AtomicBoolean cancelled, EntrySink sink) {
-		NuclrResourceData data = openResource(resource, cancelled);
-		if (data != null && sink != null) {
-			sink.columns(data.getColumnNames());
-			for (NuclrResource entry : data.getEntries()) {
-				if (isCancelled(cancelled)) {
-					break;
-				}
-				sink.add(entry);
-			}
-		}
-		return data;
 	}
 
 	private NuclrResourceData listDirectory(IsoNuclrResource folder) {
-		if (fileSystem == null || folder.entry() == null) {
+		IsoFileSystem mounted = fileSystem;
+		if (mounted == null || folder.entry() == null || !folder.belongsTo(uuid)) {
 			return null;
 		}
 		try {
-			List<IsoEntry> entries = new ArrayList<>(fileSystem.list(folder.entry()));
+			List<IsoEntry> entries = new ArrayList<>(mounted.list(folder.entry()));
 			entries.sort(Comparator.comparing(IsoEntry::directory).reversed()
 					.thenComparing(IsoEntry::name, String.CASE_INSENSITIVE_ORDER));
 
 			var data = new NuclrResourceData();
 			data.setColumnNames(COLUMN_NAMES);
 			if ("/".equals(folder.entryPath())) {
-				data.getEntries().add(IsoNuclrResource.closeEntry(context, fileSystem, uuid));
+				data.getEntries().add(IsoNuclrResource.closeEntry(context, mounted, uuid));
 			} else {
 				data.getEntries().add(IsoNuclrResource.parent(
-						context, fileSystem, fileSystem.parent(folder.entry()), uuid));
+						context, mounted, mounted.parent(folder.entry()), uuid));
 			}
 			for (IsoEntry entry : entries) {
-				data.getEntries().add(IsoNuclrResource.of(context, fileSystem, entry, uuid));
+				data.getEntries().add(IsoNuclrResource.of(context, mounted, entry, uuid));
 			}
 			this.currentFolder = folder;
 			return data;
@@ -210,10 +210,12 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 	@Override
 	public boolean supports(NuclrResource resource) {
 		if (resource instanceof IsoNuclrResource isoResource) {
-			return !closing && fileSystem != null && isoResource.belongsTo(uuid) && isoResource.isFolder()
-					&& isoResource.entry() != null;
+			IsoFileSystem mounted = fileSystem;
+			return !closing && !unloading && mounted != null && isoResource.belongsTo(uuid) && isoResource.isFolder()
+					&& (isoResource.entry() != null
+							|| isoResource.getMetadata(IsoNuclrResource.KEY_CLOSE_ISO, Boolean.FALSE));
 		}
-		return !closing && fileSystem == null && isIsoResource(resource);
+		return !closing && !unloading && !opening && fileSystem == null && isIsoResource(resource);
 	}
 
 	private static boolean isIsoResource(NuclrResource resource) {
@@ -272,10 +274,16 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 		if (entries.isEmpty()) {
 			return;
 		}
+		IsoFileSystem sourceFileSystem = fileSystem;
+		if (sourceFileSystem == null || sourceFileSystem.isClosed()) {
+			reportExtractionError("selection", new IOException("The ISO panel has been closed."), callback);
+			return;
+		}
 		Path destinationSnapshot = destination.toAbsolutePath().normalize();
 		runTransfer(() -> {
 			try {
-				if (IsoExtractor.extract(fileSystem, entries, destinationSnapshot, callback)) {
+				if (IsoExtractor.extract(sourceFileSystem, entries, destinationSnapshot,
+						callback, this::resolveExtractionConflict)) {
 					requestPanelRefresh(destinationPlugin.uuid());
 				}
 			} catch (IsoExtractor.ExtractionCancelledException e) {
@@ -308,14 +316,23 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 				|| isoResource.entry() == null || !isoResource.entry().directory()) {
 			throw new IOException("The resource is not an ISO directory.");
 		}
-		for (IsoEntry child : fileSystem.list(isoResource.entry())) {
+		IsoFileSystem mounted = fileSystem;
+		if (mounted == null || mounted.isClosed()) {
+			throw new IOException("The ISO panel has been closed.");
+		}
+		walkDescendants(mounted, isoResource.entry(), visitor, cancelled, recursive);
+	}
+
+	private void walkDescendants(IsoFileSystem mounted, IsoEntry directory,
+			Consumer<NuclrResource> visitor, AtomicBoolean cancelled, boolean recursive) throws IOException {
+		for (IsoEntry child : mounted.list(directory)) {
 			if (isCancelled(cancelled)) {
 				return;
 			}
-			IsoNuclrResource childResource = IsoNuclrResource.of(context, fileSystem, child, uuid);
+			IsoNuclrResource childResource = IsoNuclrResource.of(context, mounted, child, uuid);
 			visitor.accept(childResource);
 			if (recursive && child.directory()) {
-				walkDescendants(childResource, visitor, cancelled, true);
+				walkDescendants(mounted, child, visitor, cancelled, true);
 			}
 		}
 	}
@@ -330,6 +347,16 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 		items.add(menu("Quit", "F10", "quit"));
 		items.add(menu("Plugins", "F11", "plugins"));
 		items.add(menu("Screen", "F12", "screen"));
+		items.add(menu("Left Panel", "Alt+F1", "left"));
+		items.add(menu("Right Panel", "Alt+F2", "right"));
+		items.add(menu("Find", "Alt+F7", "find"));
+		items.add(menu("History", "Alt+F8", "history"));
+		items.add(menu("Fullscreen", "Alt+F9", "fullscreen"));
+		items.add(menu("Tree", "Alt+F10", "tree"));
+		items.add(menu("View History", "Alt+F11", "viewHistory"));
+		items.add(menu("Folder History", "Alt+F12", "folderHistory"));
+		items.add(menu("Hide Left", "Ctrl+F1", "hideLeft"));
+		items.add(menu("Hide Right", "Ctrl+F2", "hideRight"));
 		items.add(menu("Name", "Ctrl+F3", "filepanel.sort:name:Name"));
 		items.add(menu("Extension", "Ctrl+F4", "filepanel.sort:ext"));
 		items.add(menu("Date", "Ctrl+F5", "filepanel.sort:modified:Date"));
@@ -350,22 +377,24 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 
 	@Override
 	public String getCurrentLocationDisplayText() {
-		if (displayName == null) {
+		String imageName = displayName;
+		IsoNuclrResource folder = currentFolder;
+		if (imageName == null) {
 			return "";
 		}
-		String path = currentFolder != null && currentFolder.entryPath() != null
-				? currentFolder.entryPath() : "/";
-		return displayName + ":" + path;
+		String path = folder != null && folder.entryPath() != null ? folder.entryPath() : "/";
+		return imageName + ":" + path;
 	}
 
 	@Override
 	public String getWindowTitle() {
-		if (fileSystem == null) {
+		IsoFileSystem mounted = fileSystem;
+		IsoNuclrResource folder = currentFolder;
+		if (mounted == null) {
 			return getCurrentLocationDisplayText();
 		}
-		String path = currentFolder != null && currentFolder.entryPath() != null
-				? currentFolder.entryPath() : "/";
-		return fileSystem.image() + ":" + path;
+		String path = folder != null && folder.entryPath() != null ? folder.entryPath() : "/";
+		return mounted.image() + ":" + path;
 	}
 
 	@Override
@@ -418,10 +447,6 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 		return uuid;
 	}
 
-	IsoFileSystem mountedFileSystem() {
-		return fileSystem;
-	}
-
 	private Path localImage(NuclrResource resource, AtomicBoolean cancelled) throws IOException {
 		Path path = resource.getPath();
 		if (path != null && path.getFileSystem().equals(java.nio.file.FileSystems.getDefault())
@@ -431,11 +456,12 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 
 		String suffix = "-" + safeTempName(resource.getName());
 		Path temp = Files.createTempFile("nuclr-iso-", suffix);
+		temp.toFile().deleteOnExit();
 		try (InputStream input = resource.openInputStream();
 				OutputStream output = Files.newOutputStream(temp, StandardOpenOption.TRUNCATE_EXISTING)) {
 			byte[] buffer = new byte[COPY_BUFFER_SIZE];
 			for (int read; (read = input.read(buffer)) >= 0;) {
-				if (isCancelled(cancelled) || Thread.currentThread().isInterrupted()) {
+				if (unloading || isCancelled(cancelled) || Thread.currentThread().isInterrupted()) {
 					throw new IOException("ISO opening was cancelled.");
 				}
 				if (read > 0) {
@@ -446,21 +472,29 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 			Files.deleteIfExists(temp);
 			throw e instanceof IOException io ? io : new IOException("Unable to read the ISO resource.", e);
 		}
-		this.materializedImage = temp;
+		synchronized (lifecycleLock) {
+			if (unloading) {
+				Files.deleteIfExists(temp);
+				throw new IOException("ISO opening was cancelled.");
+			}
+			materializedImage = temp;
+		}
 		return temp;
 	}
 
 	private void emitClosed() {
 		closing = true;
-		if (context == null || context.getEventBus() == null) {
+		NuclrPluginContext pluginContext = context;
+		NuclrResource source = sourceResource;
+		if (pluginContext == null || pluginContext.getEventBus() == null) {
 			return;
 		}
 		var event = new HashMap<String, Object>();
 		event.put("uuid", uuid);
-		if (sourceResource != null) {
-			event.put("selectionResource", sourceResource);
+		if (source != null) {
+			event.put("selectionResource", source);
 		}
-		context.getEventBus().emit(this, EVENT_PLUGIN_UNLOAD, event);
+		pluginContext.getEventBus().emit(this, EVENT_PLUGIN_UNLOAD, event);
 	}
 
 	private void requestPanelRefresh(String pluginUuid) {
@@ -503,7 +537,14 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 			future.cancel(true);
 			Thread.currentThread().interrupt();
 		} catch (ExecutionException e) {
-			throw new IllegalStateException(e.getCause());
+			Throwable cause = e.getCause();
+			if (cause instanceof RuntimeException runtime) {
+				throw runtime;
+			}
+			if (cause instanceof Error error) {
+				throw error;
+			}
+			throw new IllegalStateException(cause);
 		}
 	}
 
@@ -540,17 +581,23 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 	}
 
 	private void closeFileSystem() {
-		IsoFileSystem opened = fileSystem;
-		fileSystem = null;
-		currentFolder = null;
+		IsoFileSystem opened;
+		synchronized (lifecycleLock) {
+			opened = fileSystem;
+			fileSystem = null;
+			currentFolder = null;
+		}
 		if (opened != null) {
 			opened.close();
 		}
 	}
 
 	private void deleteMaterializedImage() {
-		Path temp = materializedImage;
-		materializedImage = null;
+		Path temp;
+		synchronized (lifecycleLock) {
+			temp = materializedImage;
+			materializedImage = null;
+		}
 		if (temp != null) {
 			try {
 				Files.deleteIfExists(temp);
@@ -558,6 +605,44 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 				LOG.warn("Unable to delete temporary ISO image {}", temp, e);
 			}
 		}
+	}
+
+	private IsoExtractor.ConflictAction resolveExtractionConflict(IsoEntry source, Path target) {
+		if (unloading || Thread.currentThread().isInterrupted() || GraphicsEnvironment.isHeadless()) {
+			return IsoExtractor.ConflictAction.CANCEL;
+		}
+		var result = new IsoExtractor.ConflictAction[1];
+		Runnable prompt = () -> {
+			if (unloading) {
+				result[0] = IsoExtractor.ConflictAction.CANCEL;
+				return;
+			}
+			Object[] choices = { "Overwrite", "Skip", "Keep Both", "Cancel" };
+			int choice = JOptionPane.showOptionDialog(null,
+					"A destination item named \"" + source.name() + "\" already exists.",
+					"Confirm extraction", JOptionPane.DEFAULT_OPTION, JOptionPane.WARNING_MESSAGE,
+					null, choices, choices[0]);
+			result[0] = switch (choice) {
+				case 0 -> IsoExtractor.ConflictAction.OVERWRITE;
+				case 1 -> IsoExtractor.ConflictAction.SKIP;
+				case 2 -> IsoExtractor.ConflictAction.KEEP_BOTH;
+				default -> IsoExtractor.ConflictAction.CANCEL;
+			};
+		};
+		if (SwingUtilities.isEventDispatchThread()) {
+			prompt.run();
+		} else {
+			try {
+				SwingUtilities.invokeAndWait(prompt);
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				return IsoExtractor.ConflictAction.CANCEL;
+			} catch (java.lang.reflect.InvocationTargetException e) {
+				LOG.warn("Unable to show the ISO extraction conflict dialog for {}", target, e.getCause());
+				return IsoExtractor.ConflictAction.CANCEL;
+			}
+		}
+		return result[0] != null ? result[0] : IsoExtractor.ConflictAction.CANCEL;
 	}
 
 	private void reportExtractionError(String item, Exception error, NuclrPluginCallback callback) {

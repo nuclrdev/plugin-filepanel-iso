@@ -10,6 +10,7 @@ import java.io.OutputStream;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -28,10 +29,28 @@ final class IsoExtractor {
 	private IsoExtractor() {
 	}
 
+	enum ConflictAction {
+		OVERWRITE, SKIP, KEEP_BOTH, CANCEL
+	}
+
+	@FunctionalInterface
+	interface ConflictResolver {
+		ConflictAction resolve(IsoEntry source, Path target);
+	}
+
 	static boolean extract(IsoFileSystem fileSystem, List<IsoEntry> sources, Path destination,
 			NuclrPluginCallback callback) throws IOException {
+		return extract(fileSystem, sources, destination, callback,
+				(source, target) -> ConflictAction.CANCEL);
+	}
+
+	static boolean extract(IsoFileSystem fileSystem, List<IsoEntry> sources, Path destination,
+			NuclrPluginCallback callback, ConflictResolver conflictResolver) throws IOException {
 		if (fileSystem == null || sources == null || sources.isEmpty()) {
 			return false;
+		}
+		if (conflictResolver == null) {
+			throw new IllegalArgumentException("A destination conflict resolver is required.");
 		}
 		Path root = destination != null ? destination.toAbsolutePath().normalize() : null;
 		if (root == null || !Files.isDirectory(root)) {
@@ -49,7 +68,7 @@ final class IsoExtractor {
 		for (IsoEntry source : sources) {
 			checkCancelled(callback);
 			Path target = safeResolve(root, source.name());
-			extractEntry(fileSystem, source, root, target, copied, total, callback);
+			extractEntry(fileSystem, source, root, target, copied, total, callback, conflictResolver);
 		}
 
 		if (callback != null) {
@@ -59,21 +78,45 @@ final class IsoExtractor {
 	}
 
 	private static void extractEntry(IsoFileSystem fileSystem, IsoEntry source, Path destinationRoot,
-			Path target, long[] copied, long total, NuclrPluginCallback callback) throws IOException {
+			Path target, long[] copied, long total, NuclrPluginCallback callback,
+			ConflictResolver conflictResolver) throws IOException {
 		checkCancelled(callback);
 		ensureInside(destinationRoot, target);
 		if (source.directory()) {
-			if (Files.exists(target) && !Files.isDirectory(target)) {
-				throw new FileAlreadyExistsException(target.toString(), null,
-						"A file already occupies the destination directory name");
+			boolean created = false;
+			if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)
+					&& !Files.isDirectory(target, LinkOption.NOFOLLOW_LINKS)) {
+				ConflictResult result = resolveConflict(source, target, conflictResolver);
+				if (result.skip()) {
+					return;
+				}
+				target = result.target();
+				if (result.overwrite()) {
+					deleteExisting(target);
+				}
 			}
-			Files.createDirectories(target);
+			if (!Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+				Files.createDirectories(target);
+				created = true;
+			}
 			for (IsoEntry child : source.children()) {
 				extractEntry(fileSystem, child, destinationRoot, safeResolve(target, child.name()),
-						copied, total, callback);
+						copied, total, callback, conflictResolver);
 			}
-			applyTimestamp(target, source);
+			if (created) {
+				applyTimestamp(target, source);
+			}
 			return;
+		}
+
+		boolean overwrite = false;
+		if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+			ConflictResult result = resolveConflict(source, target, conflictResolver);
+			if (result.skip()) {
+				return;
+			}
+			target = result.target();
+			overwrite = result.overwrite();
 		}
 
 		Path parent = target.getParent();
@@ -104,10 +147,54 @@ final class IsoExtractor {
 				}
 			}
 			checkCancelled(callback);
-			replace(partial, target);
+			if (overwrite && Files.isDirectory(target, LinkOption.NOFOLLOW_LINKS)) {
+				deleteExisting(target);
+			}
+			moveCompleted(partial, target, overwrite);
 			applyTimestamp(target, source);
 		} finally {
 			Files.deleteIfExists(partial);
+		}
+	}
+
+	private static ConflictResult resolveConflict(IsoEntry source, Path target,
+			ConflictResolver resolver) throws IOException {
+		ConflictAction action = resolver.resolve(source, target);
+		if (action == null || action == ConflictAction.CANCEL) {
+			throw new ExtractionCancelledException();
+		}
+		return switch (action) {
+			case OVERWRITE -> new ConflictResult(target, true, false);
+			case SKIP -> new ConflictResult(target, false, true);
+			case KEEP_BOTH -> new ConflictResult(availableTarget(target), false, false);
+			case CANCEL -> throw new ExtractionCancelledException();
+		};
+	}
+
+	private static Path availableTarget(Path target) throws IOException {
+		String fileName = target.getFileName().toString();
+		int dot = fileName.lastIndexOf('.');
+		String stem = dot > 0 ? fileName.substring(0, dot) : fileName;
+		String extension = dot > 0 ? fileName.substring(dot) : "";
+		for (int copy = 2; copy <= 10_000; copy++) {
+			Path candidate = target.resolveSibling(stem + " (" + copy + ")" + extension);
+			if (!Files.exists(candidate, LinkOption.NOFOLLOW_LINKS)) {
+				return candidate;
+			}
+		}
+		throw new FileAlreadyExistsException(target.toString(), null,
+				"No available keep-both destination name was found");
+	}
+
+	private static void deleteExisting(Path target) throws IOException {
+		if (!Files.isDirectory(target, LinkOption.NOFOLLOW_LINKS)) {
+			Files.deleteIfExists(target);
+			return;
+		}
+		try (var paths = Files.walk(target)) {
+			for (Path item : paths.sorted(java.util.Comparator.reverseOrder()).toList()) {
+				Files.delete(item);
+			}
 		}
 	}
 
@@ -123,12 +210,19 @@ final class IsoExtractor {
 		}
 	}
 
-	private static void replace(Path source, Path target) throws IOException {
+	private static void moveCompleted(Path source, Path target, boolean overwrite) throws IOException {
+		if (!overwrite) {
+			Files.move(source, target);
+			return;
+		}
 		try {
 			Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
 		} catch (AtomicMoveNotSupportedException e) {
 			Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
 		}
+	}
+
+	private record ConflictResult(Path target, boolean overwrite, boolean skip) {
 	}
 
 	private static void applyTimestamp(Path target, IsoEntry source) {

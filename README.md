@@ -13,6 +13,7 @@ files, or extract selected files and directories to the opposite local panel.
 - Stream-based previews and extraction; file payloads are never loaded wholly
   into memory
 - Recursive and multi-selection extraction with byte progress and cancellation
+- Existing destination items prompt for overwrite, skip, keep-both, or cancel
 - Temporary materialisation of only a nested/remote ISO image when it has no
   local backing path
 - ISO file handles and temporary files are released when the panel closes
@@ -39,6 +40,12 @@ lazy and is read through bounded `InputStream`s.
 ## Known limitations
 
 - UDF support in the upstream reader is less extensively tested than ISO 9660.
+- UDF payload streaming is limited to files held in one recorded `short_ad`
+  extent. Embedded ICB data, `long_ad`/`ext_ad` layouts, sparse extents, and
+  fragmented or multi-extent files remain visible but are marked unreadable;
+  the plugin refuses to extract them rather than risk returning corrupt bytes.
+- Interleaved and multi-extent ISO 9660 file records are likewise left visible
+  but unreadable because the upstream reader exposes only one contiguous extent.
 - Images using non-standard logical block sizes, damaged allocation metadata,
   unsupported UDF file-entry types, or filesystems other than ISO 9660/UDF are
   rejected with a user-facing error.

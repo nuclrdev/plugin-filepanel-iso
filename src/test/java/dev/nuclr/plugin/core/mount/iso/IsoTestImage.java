@@ -24,19 +24,53 @@ final class IsoTestImage {
 		return create(image, true);
 	}
 
+	static Path createWithVersions(Path image) throws IOException {
+		return create(image, false, true);
+	}
+
+	static Path createWithUnsupportedMultiExtentFile(Path image) throws IOException {
+		create(image);
+		try (var file = new RandomAccessFile(image.toFile(), "rw")) {
+			byte[] directory = new byte[SECTOR];
+			file.seek(20L * SECTOR);
+			file.readFully(directory);
+			for (int offset = 0; offset < directory.length && directory[offset] != 0;
+					offset += Byte.toUnsignedInt(directory[offset])) {
+				int nameLength = Byte.toUnsignedInt(directory[offset + 32]);
+				String name = new String(directory, offset + 33, nameLength, StandardCharsets.US_ASCII);
+				if ("LARGE.BIN;1".equals(name)) {
+					directory[offset + 25] |= (byte) 0x80;
+					file.seek(20L * SECTOR);
+					file.write(directory);
+					return image;
+				}
+			}
+		}
+		throw new IOException("The test ISO did not contain LARGE.BIN;1.");
+	}
+
 	private static Path create(Path image, boolean compact) throws IOException {
+		return create(image, compact, false);
+	}
+
+	private static Path create(Path image, boolean compact, boolean versions) throws IOException {
 		int largeSectors = (LARGE_LENGTH + SECTOR - 1) / SECTOR;
+		int largeSector = versions ? 26 : 24;
 		// The UDF probe checks N-256 as required by the standard. Keep the tiny
 		// fixture large enough for that location to be non-negative.
-		int totalSectors = compact ? 24 + largeSectors : Math.max(600, 24 + largeSectors);
+		int totalSectors = compact ? largeSector + largeSectors : Math.max(600, largeSector + largeSectors);
 		try (var file = new RandomAccessFile(image.toFile(), "rw")) {
 			file.setLength((long) totalSectors * SECTOR);
 			writePvd(file, totalSectors);
 			writeTerminator(file);
-			writeDirectories(file);
+			writeDirectories(file, largeSector, versions);
 			writeAt(file, 22, ROOT_TEXT);
 			writeAt(file, 23, NESTED_TEXT);
-			file.seek(24L * SECTOR);
+			if (versions) {
+				writeAt(file, 24, "version one".getBytes(StandardCharsets.UTF_8));
+				writeAt(file, 25, "version two".getBytes(StandardCharsets.UTF_8));
+			}
+			file.seek((long) largeSector * SECTOR);
 			byte[] chunk = new byte[8_192];
 			int position = 0;
 			while (position < LARGE_LENGTH) {
@@ -83,7 +117,7 @@ final class IsoTestImage {
 		writeAt(file, 17, terminator);
 	}
 
-	private static void writeDirectories(RandomAccessFile file) throws IOException {
+	private static void writeDirectories(RandomAccessFile file, int largeSector, boolean versions) throws IOException {
 		byte[] root = new byte[SECTOR];
 		int at = 0;
 		at = append(root, at, record(20, SECTOR, true, new byte[] { 0 }));
@@ -91,7 +125,13 @@ final class IsoTestImage {
 		at = append(root, at, record(21, SECTOR, true, "FOLDER".getBytes(StandardCharsets.US_ASCII)));
 		at = append(root, at, record(22, ROOT_TEXT.length, false,
 				"README.TXT;1".getBytes(StandardCharsets.US_ASCII)));
-		append(root, at, record(24, LARGE_LENGTH, false,
+		if (versions) {
+			at = append(root, at, record(24, "version one".length(), false,
+					"VERSION.TXT;1".getBytes(StandardCharsets.US_ASCII)));
+			at = append(root, at, record(25, "version two".length(), false,
+					"VERSION.TXT;2".getBytes(StandardCharsets.US_ASCII)));
+		}
+		append(root, at, record(largeSector, LARGE_LENGTH, false,
 				"LARGE.BIN;1".getBytes(StandardCharsets.US_ASCII)));
 		writeAt(file, 20, root);
 

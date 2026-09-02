@@ -9,6 +9,8 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.RandomAccessFile;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
@@ -95,7 +97,7 @@ final class IsoFileSystem implements AutoCloseable {
 			} else {
 				List<IsoEntry> children = new ArrayList<>();
 				for (GenericInternalIsoFile item : roots) {
-					IsoEntry built = item != null ? build(item, "/", seen, count, 0) : null;
+					IsoEntry built = item != null ? buildSafely(item, "/", seen, count, 0) : null;
 					if (built != null) {
 						children.add(built);
 					}
@@ -168,8 +170,11 @@ final class IsoFileSystem implements AutoCloseable {
 		}
 		if (!entry.readable()) {
 			throw new IOException("This image stores " + entry.name()
-					+ " in a layout the reader cannot follow (embedded or multi-extent data),"
+					+ " in a layout the reader cannot follow (embedded, interleaved, or multi-extent data),"
 					+ " so its contents cannot be read.");
+		}
+		if (entry.size() == 0L) {
+			return InputStream.nullInputStream();
 		}
 
 		long start;
@@ -226,13 +231,18 @@ final class IsoFileSystem implements AutoCloseable {
 	private List<IsoEntry> buildChildren(GenericInternalIsoFile parent, String parentPath,
 			Set<GenericInternalIsoFile> seen, int[] count, int depth) throws IOException {
 		List<IsoEntry> children = new ArrayList<>();
-		GenericInternalIsoFile[] sourceChildren = parent.getChildren();
+		GenericInternalIsoFile[] sourceChildren;
+		try {
+			sourceChildren = parent.getChildren();
+		} catch (RuntimeException e) {
+			skip(parentPath, safeName(parent), "the directory entries could not be decoded");
+			return children;
+		}
 		if (sourceChildren != null) {
 			for (GenericInternalIsoFile child : sourceChildren) {
-				if (child == null || isDirectoryMarker(child)) {
-					continue;
-				}
-				IsoEntry built = build(child, parentPath, seen, count, depth + 1);
+				IsoEntry built = child != null
+						? buildSafely(child, parentPath, seen, count, depth + 1)
+						: null;
 				if (built != null) {
 					children.add(built);
 				}
@@ -241,22 +251,39 @@ final class IsoFileSystem implements AutoCloseable {
 		return children;
 	}
 
+	private IsoEntry buildSafely(GenericInternalIsoFile source, String parentPath,
+			Set<GenericInternalIsoFile> seen, int[] count, int depth) throws IOException {
+		try {
+			if (isDirectoryMarker(source)) {
+				return null;
+			}
+			return build(source, parentPath, seen, count, depth);
+		} catch (RuntimeException e) {
+			seen.remove(source);
+			return skip(parentPath, safeName(source), "the entry metadata could not be decoded");
+		}
+	}
+
 	/**
 	 * Index one directory entry, or return {@code null} to drop it.
 	 *
 	 * <p>A single malformed record must not cost the user the whole image, so a
-	 * name that cannot be represented safely, a path already taken (ISO 9660 keeps
-	 * file versions as {@code NAME;1} and {@code NAME;2}, which collapse to one
-	 * name once the suffix is stripped), a cycle, or a subtree nested deeper than
+	 * name that cannot be represented safely, a duplicate path, a cycle, or a
+	 * subtree nested deeper than
 	 * {@link #MAX_TREE_DEPTH} drops that entry alone and is counted in
-	 * {@link #skippedEntries()}. Only {@link #MAX_ENTRIES}, which bounds the work
-	 * an untrusted image can demand, still aborts the mount.
+	 * {@link #skippedEntries()}. ISO 9660 version suffixes are retained only when
+	 * stripping them would collide with an earlier version. The entry limit stops
+	 * further indexing instead of making the otherwise browsable image fail.
 	 */
 	private IsoEntry build(GenericInternalIsoFile source, String parentPath,
 			Set<GenericInternalIsoFile> seen, int[] count, int depth) throws IOException {
 		if (++count[0] > MAX_ENTRIES) {
-			throw new IOException("The ISO directory tree exceeds safe indexing limits.");
+			if (count[0] == MAX_ENTRIES + 1) {
+				skip(parentPath, safeName(source), "the directory tree exceeds the indexing limit");
+			}
+			return null;
 		}
+		String rawName = safeName(source);
 		String name = displayName(source);
 		if (depth > MAX_TREE_DEPTH) {
 			return skip(parentPath, name, "nested deeper than " + MAX_TREE_DEPTH + " levels");
@@ -268,7 +295,18 @@ final class IsoFileSystem implements AutoCloseable {
 			return skip(parentPath, name, "the entry closes a directory cycle");
 		}
 
-		String path = "/".equals(parentPath) ? "/" + name : parentPath + "/" + name;
+		String path = childPath(parentPath, name);
+		if (entries.containsKey(path) && !rawName.equals(name) && isSafeName(rawName)) {
+			String versionedPath = childPath(parentPath, rawName);
+			if (!entries.containsKey(versionedPath)) {
+				name = rawName;
+				path = versionedPath;
+			}
+		}
+		if (entries.containsKey(path)) {
+			seen.remove(source);
+			return skip(parentPath, name, "the path is already taken by another entry");
+		}
 		List<IsoEntry> children;
 		try {
 			children = source.isDirectory()
@@ -288,6 +326,10 @@ final class IsoFileSystem implements AutoCloseable {
 			return skip(parentPath, name, "the path is already taken by another entry");
 		}
 		return entry;
+	}
+
+	private static String childPath(String parentPath, String name) {
+		return "/".equals(parentPath) ? "/" + name : parentPath + "/" + name;
 	}
 
 	private IsoEntry skip(String parentPath, String name, String reason) {
@@ -335,7 +377,7 @@ final class IsoFileSystem implements AutoCloseable {
 	 * the real end of the data, so that is what the panel shows and what
 	 * extraction copies.
 	 */
-	private static long payload(GenericInternalIsoFile source) {
+	static long payload(GenericInternalIsoFile source) {
 		if (source instanceof UdfInternalDataFile udf) {
 			return udf.getThisFileEntry().getInfoLengthAsLong();
 		}
@@ -355,7 +397,14 @@ final class IsoFileSystem implements AutoCloseable {
 	 * because the run still lies inside the image. Mark those entries instead, and
 	 * let {@link #open} refuse them with an explanation.
 	 */
-	private static boolean isStreamable(GenericInternalIsoFile source) {
+	static boolean isStreamable(GenericInternalIsoFile source) {
+		if (source instanceof IsoFormatInternalDataFile iso
+				&& iso.getUnderlyingRecord().isPresent()) {
+			var record = iso.getUnderlyingRecord().get();
+			return (record.getFileFlagsAsInt() & 0x80) == 0
+					&& record.getFileUnitSize() == 0
+					&& record.getInterLeaveGapSize() == 0;
+		}
 		if (!(source instanceof UdfInternalDataFile udf)) {
 			return true;
 		}
@@ -363,13 +412,29 @@ final class IsoFileSystem implements AutoCloseable {
 			FileEntry file = udf.getThisFileEntry();
 			byte[] flags = file.getIcbTag().getFlags();
 			// ECMA-167 4/14.6.8: bits 0-2 of the ICB flags select the allocation
-			// descriptor type, and value 3 means the data sits inside the ICB.
-			if (flags != null && flags.length > 0 && (flags[0] & 0x07) == 0x03) {
+			// descriptor type. The reader computes its sector from the first short_ad,
+			// so embedded, long_ad, and ext_ad layouts must not use that offset.
+			if (flags == null || flags.length == 0 || (flags[0] & 0x07) != 0) {
 				return false;
 			}
 			long info = file.getInfoLengthAsLong();
-			long allocated = Integer.toUnsignedLong(file.getLengthInAllocationDescriptorAsInt());
-			return info <= allocated;
+			if (info < 0L) {
+				return false;
+			}
+			if (info == 0L) {
+				return true;
+			}
+			byte[] descriptors = file.getAllocationDescriptors();
+			if (descriptors == null || descriptors.length < 8) {
+				return false;
+			}
+			int encodedLength = ByteBuffer.wrap(descriptors, 0, Integer.BYTES)
+					.order(ByteOrder.LITTLE_ENDIAN).getInt();
+			int extentType = encodedLength >>> 30;
+			long extentLength = Integer.toUnsignedLong(encodedLength & 0x3fff_ffff);
+			// An extent type other than zero is unrecorded or redirects to more ADs.
+			// A shorter first extent means the file continues in another descriptor.
+			return extentType == 0 && info <= extentLength;
 		} catch (RuntimeException e) {
 			return false;
 		}
@@ -467,7 +532,7 @@ final class IsoFileSystem implements AutoCloseable {
 		 */
 		@Override
 		public int available() {
-			return (int) Math.min(remaining, Integer.MAX_VALUE);
+			return streamClosed ? 0 : (int) Math.min(remaining, Integer.MAX_VALUE);
 		}
 
 		@Override
