@@ -10,7 +10,7 @@
 	<name>Nuclr File Panel - ISO</name>
 
 	<properties>
-		<platform.sdk.version>4.0.0</platform.sdk.version>
+		<platform.sdk.version>5.0.0</platform.sdk.version>
 		<maven.compiler.source>25</maven.compiler.source>
 		<maven.compiler.target>25</maven.compiler.target>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

@@ -210,6 +210,7 @@ class IsoFilePanelPluginTest {
 
 	private record TestContext(NuclrEventBus eventBus) implements NuclrPluginContext {
 		@Override public NuclrEventBus getEventBus() { return eventBus; }
+		@Override public dev.nuclr.platform.NuclrCredentialStore getCredentialStore() { throw new UnsupportedOperationException(); }
 		@Override public NuclrThemeScheme getTheme() { return null; }
 		@Override public NuclrSettings getSettings() { return null; }
 		@Override public Locale getLocale() { return Locale.US; }
