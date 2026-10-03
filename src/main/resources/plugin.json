@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "version": "${project.version}",
-  "platformSdkVersion": "${platform.sdk.version}",
+  "platformSdkVersion": "${platform.sdk.min.version}",
 	"plugins": [
 		{
 			"class": "dev.nuclr.plugin.core.mount.iso.IsoFilePanelPlugin",
