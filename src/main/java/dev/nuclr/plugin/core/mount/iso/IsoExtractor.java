@@ -4,6 +4,8 @@
  */
 package dev.nuclr.plugin.core.mount.iso;
 
+import static dev.nuclr.plugin.core.mount.iso.Messages.tr;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -54,15 +56,15 @@ final class IsoExtractor {
 		}
 		Path root = destination != null ? destination.toAbsolutePath().normalize() : null;
 		if (root == null || !Files.isDirectory(root)) {
-			throw new IOException("The extraction destination is not a local directory.");
+			throw new IOException(tr("error.destination.not.directory"));
 		}
 
 		long total = sources.stream().mapToLong(IsoExtractor::totalFileBytes).reduce(0L, IsoExtractor::saturatedAdd);
 		long[] copied = { 0L };
 		if (callback != null) {
 			callback.onStart(sources.size() == 1
-					? "Extracting " + sources.get(0).name()
-					: "Extracting " + sources.size() + " items");
+					? tr("extract.progress.one", sources.get(0).name())
+					: tr("extract.progress.many", String.valueOf(sources.size())));
 		}
 
 		for (IsoEntry source : sources) {
@@ -143,7 +145,7 @@ final class IsoExtractor {
 					}
 				}
 				if (fileBytes != source.size()) {
-					throw new IOException("The ISO image did not contain all bytes declared for " + source.name() + ".");
+					throw new IOException(tr("error.short.entry", source.name()));
 				}
 			}
 			checkCancelled(callback);
@@ -206,7 +208,7 @@ final class IsoExtractor {
 
 	private static void ensureInside(Path root, Path target) throws IOException {
 		if (!target.startsWith(root)) {
-			throw new IOException("An ISO entry attempted to escape the extraction directory.");
+			throw new IOException(tr("error.entry.escape"));
 		}
 	}
 

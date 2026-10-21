@@ -4,6 +4,8 @@
  */
 package dev.nuclr.plugin.core.mount.iso;
 
+import static dev.nuclr.plugin.core.mount.iso.Messages.tr;
+
 import java.awt.GraphicsEnvironment;
 import java.awt.SecondaryLoop;
 import java.awt.Toolkit;
@@ -77,6 +79,9 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 	@Override
 	public void preinit(NuclrPluginContext context) {
 		this.context = context;
+		if (context != null) {
+			Messages.use(context.getLocale());
+		}
 	}
 
 	@Override
@@ -168,8 +173,7 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 			LOG.error("Unable to open ISO resource {}", resource.getName(), e);
 			closeFileSystem();
 			deleteMaterializedImage();
-			showError("Unable to open ISO image",
-					"The ISO filesystem is unsupported or the file is damaged.");
+			showError(tr("error.open.title"), tr("error.open.message"));
 			emitClosed();
 			return null;
 		} finally {
@@ -202,7 +206,7 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 			return data;
 		} catch (IOException e) {
 			LOG.error("Unable to list ISO directory {}", folder.entryPath(), e);
-			showError("Unable to read ISO directory", "The ISO directory could not be read.");
+			showError(tr("error.list.title"), tr("error.list.message"));
 			return null;
 		}
 	}
@@ -265,8 +269,8 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 		NuclrResource destinationResource = destinationPlugin.getCurrentResource();
 		Path destination = destinationResource != null ? destinationResource.getPath() : null;
 		if (destination == null || !Files.isDirectory(destination)) {
-			IOException error = new IOException("The destination panel is not a local filesystem directory.");
-			reportExtractionError("selection", error, callback);
+			IOException error = new IOException(tr("error.destination.not.local"));
+			reportExtractionError(tr("extract.selection"), error, callback);
 			return;
 		}
 
@@ -276,7 +280,7 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 		}
 		IsoFileSystem sourceFileSystem = fileSystem;
 		if (sourceFileSystem == null || sourceFileSystem.isClosed()) {
-			reportExtractionError("selection", new IOException("The ISO panel has been closed."), callback);
+			reportExtractionError(tr("extract.selection"), new IOException(tr("error.panel.closed")), callback);
 			return;
 		}
 		Path destinationSnapshot = destination.toAbsolutePath().normalize();
@@ -289,7 +293,7 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 			} catch (IsoExtractor.ExtractionCancelledException e) {
 				LOG.debug("ISO extraction cancelled");
 			} catch (IOException | RuntimeException e) {
-				String item = entries.size() == 1 ? entries.get(0).name() : "selected items";
+				String item = entries.size() == 1 ? entries.get(0).name() : tr("extract.selected.items");
 				reportExtractionError(item, e, callback);
 			}
 		});
@@ -318,7 +322,7 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 		}
 		IsoFileSystem mounted = fileSystem;
 		if (mounted == null || mounted.isClosed()) {
-			throw new IOException("The ISO panel has been closed.");
+			throw new IOException(tr("error.panel.closed"));
 		}
 		walkDescendants(mounted, isoResource.entry(), visitor, cancelled, recursive);
 	}
@@ -341,28 +345,28 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 	public List<NuclrMenuResource> menuItems(NuclrResource source) {
 		var items = new ArrayList<NuclrMenuResource>();
 		if (source != null && !source.isFolder()) {
-			items.add(menu("View", "F3", ACTION_VIEW));
+			items.add(menu(tr("menu.view"), "F3", ACTION_VIEW));
 		}
-		items.add(menu("Extract", "F5", ACTION_COPY));
-		items.add(menu("Quit", "F10", "quit"));
-		items.add(menu("Plugins", "F11", "plugins"));
-		items.add(menu("Screen", "F12", "screen"));
-		items.add(menu("Left Panel", "Alt+F1", "left"));
-		items.add(menu("Right Panel", "Alt+F2", "right"));
-		items.add(menu("Find", "Alt+F7", "find"));
-		items.add(menu("History", "Alt+F8", "history"));
-		items.add(menu("Fullscreen", "Alt+F9", "fullscreen"));
-		items.add(menu("Tree", "Alt+F10", "tree"));
-		items.add(menu("View History", "Alt+F11", "viewHistory"));
-		items.add(menu("Folder History", "Alt+F12", "folderHistory"));
-		items.add(menu("Hide Left", "Ctrl+F1", "hideLeft"));
-		items.add(menu("Hide Right", "Ctrl+F2", "hideRight"));
-		items.add(menu("Name", "Ctrl+F3", "filepanel.sort:name:Name"));
-		items.add(menu("Extension", "Ctrl+F4", "filepanel.sort:ext"));
-		items.add(menu("Date", "Ctrl+F5", "filepanel.sort:modified:Date"));
-		items.add(menu("Size", "Ctrl+F6", "filepanel.sort:size:Size"));
-		items.add(menu("Unsort", "Ctrl+F7", "filepanel.sort:unsorted"));
-		items.add(menu("Sort", "Ctrl+F12", "filepanel.sort:dialog"));
+		items.add(menu(tr("menu.extract"), "F5", ACTION_COPY));
+		items.add(menu(tr("menu.quit"), "F10", "quit"));
+		items.add(menu(tr("menu.plugins"), "F11", "plugins"));
+		items.add(menu(tr("menu.screen"), "F12", "screen"));
+		items.add(menu(tr("menu.left.panel"), "Alt+F1", "left"));
+		items.add(menu(tr("menu.right.panel"), "Alt+F2", "right"));
+		items.add(menu(tr("menu.find"), "Alt+F7", "find"));
+		items.add(menu(tr("menu.history"), "Alt+F8", "history"));
+		items.add(menu(tr("menu.fullscreen"), "Alt+F9", "fullscreen"));
+		items.add(menu(tr("menu.tree"), "Alt+F10", "tree"));
+		items.add(menu(tr("menu.view.history"), "Alt+F11", "viewHistory"));
+		items.add(menu(tr("menu.folder.history"), "Alt+F12", "folderHistory"));
+		items.add(menu(tr("menu.hide.left"), "Ctrl+F1", "hideLeft"));
+		items.add(menu(tr("menu.hide.right"), "Ctrl+F2", "hideRight"));
+		items.add(menu(tr("menu.sort.name"), "Ctrl+F3", "filepanel.sort:name:Name"));
+		items.add(menu(tr("menu.sort.extension"), "Ctrl+F4", "filepanel.sort:ext"));
+		items.add(menu(tr("menu.sort.date"), "Ctrl+F5", "filepanel.sort:modified:Date"));
+		items.add(menu(tr("menu.sort.size"), "Ctrl+F6", "filepanel.sort:size:Size"));
+		items.add(menu(tr("menu.unsort"), "Ctrl+F7", "filepanel.sort:unsorted"));
+		items.add(menu(tr("menu.sort"), "Ctrl+F12", "filepanel.sort:dialog"));
 		return items;
 	}
 
@@ -405,7 +409,7 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 		if (selectedResources.size() == 1) {
 			NuclrResource resource = selectedResources.get(0);
 			return resource.getName() + "  |  "
-					+ (resource.isFolder() ? "Folder" : IsoNuclrResource.displaySize(resource.getLength()));
+					+ (resource.isFolder() ? tr("summary.folder") : IsoNuclrResource.displaySize(resource.getLength()));
 		}
 		long bytes = 0L;
 		int files = 0;
@@ -418,7 +422,7 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 				bytes = saturatedAdd(bytes, resource.getLength());
 			}
 		}
-		return "Bytes: " + IsoNuclrResource.displaySize(bytes) + ",  files: " + files + ",  folders: " + folders;
+		return tr("summary.selection", IsoNuclrResource.displaySize(bytes), String.valueOf(files), String.valueOf(folders));
 	}
 
 	@Override
@@ -617,10 +621,11 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 				result[0] = IsoExtractor.ConflictAction.CANCEL;
 				return;
 			}
-			Object[] choices = { "Overwrite", "Skip", "Keep Both", "Cancel" };
+			Object[] choices = { tr("conflict.overwrite"), tr("conflict.skip"), tr("conflict.keep.both"),
+					tr("conflict.cancel") };
 			int choice = JOptionPane.showOptionDialog(null,
-					"A destination item named \"" + source.name() + "\" already exists.",
-					"Confirm extraction", JOptionPane.DEFAULT_OPTION, JOptionPane.WARNING_MESSAGE,
+					tr("conflict.message", source.name()),
+					tr("conflict.title"), JOptionPane.DEFAULT_OPTION, JOptionPane.WARNING_MESSAGE,
 					null, choices, choices[0]);
 			result[0] = switch (choice) {
 				case 0 -> IsoExtractor.ConflictAction.OVERWRITE;
@@ -648,18 +653,18 @@ public final class IsoFilePanelPlugin implements FilePanelNuclrPlugin {
 	private void reportExtractionError(String item, Exception error, NuclrPluginCallback callback) {
 		LOG.error("Unable to extract {} from {}", item, displayName, error);
 		if (callback != null) {
-			callback.onError("Unable to extract " + item, error);
+			callback.onError(tr("extract.error.title", item), error);
 		}
-		showError("Unable to extract " + item, "The ISO image could not be read completely or the destination could not be written.");
+		showError(tr("extract.error.title", item), tr("extract.error.message"));
 	}
 
 	private void reportUnsupported(String action, NuclrPluginCallback callback) {
-		var error = new UnsupportedOperationException("ISO images are read-only.");
+		var error = new UnsupportedOperationException(tr("readonly.error"));
 		LOG.debug("Rejected unsupported ISO action {}", action);
 		if (callback != null) {
-			callback.onError("ISO images are read-only", error);
+			callback.onError(tr("readonly.callback"), error);
 		}
-		showError("Read-only ISO", "This operation is not supported inside an ISO image.");
+		showError(tr("readonly.title"), tr("readonly.message"));
 	}
 
 	private static boolean isMutationAction(String action) {

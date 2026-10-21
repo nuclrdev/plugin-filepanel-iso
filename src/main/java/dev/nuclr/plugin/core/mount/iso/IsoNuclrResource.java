@@ -4,6 +4,8 @@
  */
 package dev.nuclr.plugin.core.mount.iso;
 
+import static dev.nuclr.plugin.core.mount.iso.Messages.tr;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.OpenOption;
@@ -79,12 +81,12 @@ final class IsoNuclrResource extends NuclrResource {
 	@Override
 	public InputStream openInputStream(OpenOption... options) throws Exception {
 		if (folder || fileSystem == null || entry == null) {
-			throw new IOException("The ISO resource is not a file.");
+			throw new IOException(tr("error.resource.not.file"));
 		}
 		if (options != null && options.length > 0) {
 			for (OpenOption option : options) {
 				if (option != java.nio.file.StandardOpenOption.READ) {
-					throw new IOException("ISO resources are read-only.");
+					throw new IOException(tr("error.resource.read.only"));
 				}
 			}
 		}
@@ -94,7 +96,7 @@ final class IsoNuclrResource extends NuclrResource {
 	private void addColumns(NuclrPluginContext context) {
 		Locale locale = context != null && context.getLocale() != null ? context.getLocale() : Locale.getDefault();
 		metadata.put("Name", name);
-		metadata.put("Size", folder ? "Folder" : displaySize(length));
+		metadata.put("Size", folder ? tr("summary.folder") : displaySize(length));
 		metadata.put("Date", formatDate(locale, lastModifiedDateTime));
 		metadata.put("Time", formatTime(locale, lastModifiedDateTime));
 		metadata.put("iso.readOnly", Boolean.TRUE);
@@ -112,15 +114,15 @@ final class IsoNuclrResource extends NuclrResource {
 
 	static String displaySize(long bytes) {
 		if (bytes < 1024) {
-			return bytes + " B";
+			return tr("size.bytes", String.valueOf(bytes));
 		}
 		double value = bytes;
-		String[] units = { "KB", "MB", "GB", "TB", "PB" };
+		String[] units = { "size.kb", "size.mb", "size.gb", "size.tb", "size.pb" };
 		int unit = -1;
 		while (value >= 1024 && unit < units.length - 1) {
 			value /= 1024;
 			unit++;
 		}
-		return String.format(Locale.ROOT, unit == 0 ? "%.0f %s" : "%.1f %s", value, units[unit]);
+		return tr(units[unit], String.format(Locale.ROOT, unit == 0 ? "%.0f" : "%.1f", value));
 	}
 }

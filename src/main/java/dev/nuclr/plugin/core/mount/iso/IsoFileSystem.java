@@ -4,6 +4,8 @@
  */
 package dev.nuclr.plugin.core.mount.iso;
 
+import static dev.nuclr.plugin.core.mount.iso.Messages.tr;
+
 import java.io.EOFException;
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -166,12 +168,10 @@ final class IsoFileSystem implements AutoCloseable {
 	InputStream open(IsoEntry entry) throws IOException {
 		ensureOpen();
 		if (entry == null || entry.directory() || entry.source() == null) {
-			throw new IOException("The requested ISO path is not a file.");
+			throw new IOException(tr("error.path.not.file"));
 		}
 		if (!entry.readable()) {
-			throw new IOException("This image stores " + entry.name()
-					+ " in a layout the reader cannot follow (embedded, interleaved, or multi-extent data),"
-					+ " so its contents cannot be read.");
+			throw new IOException(tr("error.unreadable.layout", entry.name()));
 		}
 		if (entry.size() == 0L) {
 			return InputStream.nullInputStream();
@@ -182,11 +182,11 @@ final class IsoFileSystem implements AutoCloseable {
 			start = Math.multiplyExact(entry.source().getLogicalSectorLocation(),
 					(long) IsoFormatConstant.BYTES_PER_SECTOR);
 		} catch (ArithmeticException e) {
-			throw new IOException("The ISO file extent is outside the supported range.", e);
+			throw new IOException(tr("error.extent.range"), e);
 		}
 		long imageLength = Files.size(image);
 		if (start < 0 || entry.size() < 0 || start > imageLength || entry.size() > imageLength - start) {
-			throw new EOFException("The ISO file extent lies outside the image.");
+			throw new EOFException(tr("error.extent.outside"));
 		}
 
 		RandomAccessFile file = new RandomAccessFile(image.toFile(), "r");
@@ -466,7 +466,7 @@ final class IsoFileSystem implements AutoCloseable {
 
 	private void ensureOpen() throws IOException {
 		if (closed.get()) {
-			throw new IOException("The ISO panel has been closed.");
+			throw new IOException(tr("error.panel.closed"));
 		}
 	}
 
@@ -487,7 +487,7 @@ final class IsoFileSystem implements AutoCloseable {
 			}
 			int value = file.read();
 			if (value < 0) {
-				throw new EOFException("The ISO image ended before the file was read completely.");
+				throw new EOFException(tr("error.image.ended"));
 			}
 			remaining--;
 			return value;
@@ -505,7 +505,7 @@ final class IsoFileSystem implements AutoCloseable {
 			int requested = (int) Math.min(length, remaining);
 			int read = file.read(buffer, offset, requested);
 			if (read < 0) {
-				throw new EOFException("The ISO image ended before the file was read completely.");
+				throw new EOFException(tr("error.image.ended"));
 			}
 			remaining -= read;
 			return read;
