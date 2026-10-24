@@ -26,7 +26,7 @@ import org.junit.jupiter.api.Test;
 class MessagesTest {
 
 	/** Every translation shipped with the plugin. Add a language here when adding its file. */
-	private static final List<String> TRANSLATIONS = List.of("be");
+	private static final List<String> TRANSLATIONS = List.of("be", "uk");
 
 	private static final Pattern PLACEHOLDER = Pattern.compile("\\{(\\d+)[^}]*}");
 	private static final Pattern TR_CALL = Pattern.compile("\\btr\\(\\s*\"([^\"]+)\"\\s*[,)]");
